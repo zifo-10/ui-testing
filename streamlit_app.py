@@ -1,10 +1,12 @@
 import streamlit as st
 import pandas as pd
 import asyncio
+import re
 from typing import List, Dict, Any
 import io
 from datetime import datetime
 from streamlit_tags import st_tags
+from docx import Document
 
 # Import your actual schemas and service
 from app.schema.video_schema import VideoRequestSchema, MetaDataSchema
@@ -12,10 +14,11 @@ from app.models.llm_response_model import QuizResponse
 from app.service.course_service import generate_quiz
 from app.contant_manager import question_generation_prompt
 
-def convert_quiz_to_dataframe(quiz_response: QuizResponse) -> pd.DataFrame:
+def convert_quiz_to_dataframe(quiz_response: QuizResponse, video_number: str) -> pd.DataFrame:
     data = []
     for i, quiz_item in enumerate(quiz_response.quiz):
         data.append({
+            'Video': video_number,
             'Question_ID': i + 1,
             'Question': quiz_item.question,
             'Question_Type': quiz_item.question_type,
@@ -62,13 +65,30 @@ def create_excel_download(df: pd.DataFrame) -> bytes:
             worksheet.column_dimensions[column_name].width = min(max_length + 2, 50)
     return output.getvalue()
 
+def extract_videos_from_text(text: str) -> List[Dict[str, str]]:
+    pattern = r'(Video\s+\d+)'  # Matches "Video 1", "Video 2", etc.
+    splits = re.split(pattern, text)
+    videos = []
+    i = 1
+    while i < len(splits):
+        title = splits[i].strip()
+        content = splits[i + 1].strip() if i + 1 < len(splits) else ""
+        videos.append({"title": title, "content": content})
+        i += 2
+    return videos
+
+def read_docx_text(file) -> str:
+    doc = Document(file)
+    full_text = []
+    for para in doc.paragraphs:
+        full_text.append(para.text)
+    return '\n'.join(full_text)
+
 def main():
     st.set_page_config(page_title="Quiz Generator", page_icon="📝", layout="wide")
     st.title("📝 Quiz Generator")
-    st.markdown("Generate quizzes from video content, edit them, and download as Excel")
+    st.markdown("Generate quizzes from multi-video course documents, edit them, and download as Excel")
 
-    if 'quiz_generated' not in st.session_state:
-        st.session_state.quiz_generated = False
     if 'quiz_data' not in st.session_state:
         st.session_state.quiz_data = None
     if 'edited_df' not in st.session_state:
@@ -77,11 +97,7 @@ def main():
     with st.sidebar:
         st.header("📋 Quiz Configuration")
 
-        video_input = st.text_area(
-            "Video URL or Content",
-            placeholder="Enter video URL or describe the video content...",
-            height=100
-        )
+        uploaded_file = st.file_uploader("📂 Upload Course Document", type=["txt", "md", "docx"])
 
         st.subheader("🛠 Skills")
         skills_input = st_tags(
@@ -113,27 +129,37 @@ def main():
         if st.button("📜 Show Prompt", use_container_width=True):
             st.code(question_generation_prompt, language="python")
 
-    if generate_button and video_input and skills_input and objectives_input:
-        skills = [MetaDataSchema(name=s.strip()) for s in skills_input if s.strip()]
-        objectives = [MetaDataSchema(name=o.strip()) for o in objectives_input if o.strip()]
-        request = VideoRequestSchema(video=video_input, skills=skills, objective=objectives, language=language)
+    if generate_button and uploaded_file and skills_input and objectives_input:
+        try:
+            if uploaded_file.name.endswith(".docx"):
+                file_text = read_docx_text(uploaded_file)
+            else:
+                file_text = uploaded_file.read().decode("utf-8")
 
-        with st.spinner("🤖 Generating quiz..."):
-            try:
-                quiz_response = asyncio.run(generate_quiz(request))
-                st.session_state.quiz_data = quiz_response
-                st.session_state.quiz_generated = True
-                st.success("✅ Quiz generated successfully!")
-            except Exception as e:
-                st.error(f"❌ Error generating quiz: {str(e)}")
+            videos = extract_videos_from_text(file_text)
+            all_dfs = []
+            skills = [MetaDataSchema(name=s.strip()) for s in skills_input if s.strip()]
+            objectives = [MetaDataSchema(name=o.strip()) for o in objectives_input if o.strip()]
+
+            with st.spinner("🤖 Generating quizzes for all videos..."):
+                for video in videos:
+                    request = VideoRequestSchema(video=video["content"], skills=skills, objective=objectives, language=language)
+                    quiz_response = asyncio.run(generate_quiz(request))
+                    df = convert_quiz_to_dataframe(quiz_response, video["title"])
+                    all_dfs.append(df)
+
+                full_df = pd.concat(all_dfs, ignore_index=True)
+                st.session_state.quiz_data = full_df
+                st.success("✅ All quizzes generated successfully!")
+        except Exception as e:
+            st.error(f"❌ Error generating quizzes: {str(e)}")
 
     elif generate_button:
-        st.warning("⚠️ Please fill in all required fields")
+        st.warning("⚠️ Please upload a file and fill in all required fields")
 
-    if st.session_state.quiz_generated and st.session_state.quiz_data:
+    if st.session_state.quiz_data is not None:
         st.header("📊 Generated Quiz")
-
-        df = convert_quiz_to_dataframe(st.session_state.quiz_data)
+        df = st.session_state.quiz_data
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Questions", len(df))
@@ -149,6 +175,7 @@ def main():
             use_container_width=True,
             num_rows="dynamic",
             column_config={
+                "Video": st.column_config.TextColumn("Video"),
                 "Question_ID": st.column_config.NumberColumn("ID", disabled=True),
                 "Question": st.column_config.TextColumn("Question", width="large"),
                 "Question_Type": st.column_config.SelectboxColumn("Type", options=["multiple_choice", "true_false"]),
@@ -193,25 +220,26 @@ def main():
 
         with st.expander("👀 Preview Quiz Questions"):
             for _, row in edited_df.iterrows():
-                st.markdown(f"**Question {int(row['Question_ID'])}:** {row['Question']}")
+                st.markdown(f"**[{row['Video']}] Question {int(row['Question_ID'])}:** {row['Question']}")
                 st.markdown(f"*Type:* {row['Question_Type']} | *Level:* {row['Question_Level']} | *Post Assessment:* {row['Post_Assessment']}")
                 if row['Options']:
                     st.markdown(f"*Options:* {row['Options']}")
                 st.markdown(f"*Correct Answer:* {row['Correct_Answer']}")
                 st.markdown("---")
 
-    if not st.session_state.quiz_generated:
+    if st.session_state.quiz_data is None:
         st.markdown("""
         ## 🚀 How to Use
 
-        1. **Enter Video Info**: Provide the video URL or content.
+        1. **Upload File**: Upload a course file (TXT, MD or DOCX) containing multiple video descriptions.
         2. **Add Skills/Objectives**: Use tags to define key skills and learning goals.
         3. **Select Language**: Choose quiz language.
-        4. **Generate**: Let the assistant create quiz questions.
+        4. **Generate**: Let the assistant create quiz questions for each video.
         5. **Edit**: Customize questions as needed.
         6. **Download**: Export as Excel or CSV.
 
         ### 📝 Tips
+        - Each video must begin with `Video 1`, `Video 2`, etc.
         - Use "|" to separate multiple options
         - Levels: 1 (Easy) to 6 (Advanced)
         - Post Assessment = final evaluation

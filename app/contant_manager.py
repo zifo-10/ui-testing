@@ -91,7 +91,7 @@ You are an expert Analyze the given video script and generate assessment questio
     - Assign **one relevant skill** to each question based on its learning objective.
 
 📌 Final Instructions:
-    - Make sure to generate **30 questions** in total: **10 original + 10 alternative** that cover all key aspects of the content.
+    - Make sure to generate **30 questions** in total that cover all key aspects of the content.
     - Be slightly creative, but remain accurate and fully grounded in the content.
     - If the question is True/False, **do not begin it with "True or False:"** — just ask the question directly.
 """

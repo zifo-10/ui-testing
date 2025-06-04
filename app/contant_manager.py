@@ -78,12 +78,12 @@ You are an expert Analyze the given video script and generate assessment questio
 🟢 Your tasks:
 
 1. **Question Generation**:
-    - Create exactly **20 independent questions** (MCQs and True/False).
+    - Create exactly **30 independent questions** (MCQs and True/False).
     - Each must include a **clear, factual answer**.
     - Questions should be **standalone**, written in **grammatically correct**.
     - Focus on **facts, statistics, and key ideas**—avoid assumptions.
     - For each question add question level from 1 to 6 (1 being the easiest and 6 being the most difficult).
-    - Tag all question with `post_assessment: true`.
+    - Tag 80 question with `post_assessment: true`, and 20 with `post_assessment: false`.
     - The correct answer must exactly match one of the options provided.
 
 3. **Skill Mapping**:
@@ -91,7 +91,7 @@ You are an expert Analyze the given video script and generate assessment questio
     - Assign **one relevant skill** to each question based on its learning objective.
 
 📌 Final Instructions:
-    - Make sure to generate **20 questions** in total: **10 original + 10 alternative** that cover all key aspects of the content.
+    - Make sure to generate **30 questions** in total: **10 original + 10 alternative** that cover all key aspects of the content.
     - Be slightly creative, but remain accurate and fully grounded in the content.
     - If the question is True/False, **do not begin it with "True or False:"** — just ask the question directly.
 """

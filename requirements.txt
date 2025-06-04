@@ -1,0 +1,12 @@
+dotenv==0.9.9
+fastapi==0.115.12
+openai==1.70.0
+pandas==2.2.3
+pydantic==2.11.2
+pydantic_core==2.33.1
+python-docx==1.1.2
+python-dotenv==1.1.0
+python-multipart==0.0.20
+qdrant-client==1.13.3
+requests==2.32.3
+streamlit==1.45.1

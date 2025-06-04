@@ -118,12 +118,30 @@ async def simplify_paragraph_v1(paragraphs: List[ProcessedParagraph]) -> List[Si
     return results
 
 
-async def generate_quiz(paragraphs: VideoRequestSchema) -> QuizResponse:
-    logger.info("Starting quiz generation...")
-    quiz = llm_client.generate_quiz(
-        skills=paragraphs.skills,
-        objective=paragraphs.objective,
-        paragraph_content=paragraphs.video,
-        language=paragraphs.language
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
+from typing import List
+
+
+executor = ThreadPoolExecutor()
+
+
+def _generate_quiz_sync(paragraph: VideoRequestSchema) -> QuizResponse:
+    return llm_client.generate_quiz(
+        skills=paragraph.skills,
+        objective=paragraph.objective,
+        paragraph_content=paragraph.video,
+        language=paragraph.language
     )
-    return quiz
+
+
+async def generate_quiz(paragraphs: List[VideoRequestSchema]) -> List[QuizResponse]:
+    logger.info("Starting parallel quiz generation...")
+    loop = asyncio.get_running_loop()
+
+    tasks = [
+        loop.run_in_executor(executor, _generate_quiz_sync, paragraph)
+        for paragraph in paragraphs
+    ]
+    return await asyncio.gather(*tasks)
+

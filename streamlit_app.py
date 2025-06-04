@@ -153,9 +153,18 @@ def main():
             objectives = [MetaDataSchema(name=o.strip()) for o in objectives_input if o.strip()]
 
             with st.spinner("🤖 Generating quizzes for all videos..."):
-                for video in videos:
-                    request = VideoRequestSchema(video=video["content"], skills=skills, objective=objectives, language=language)
-                    quiz_response = asyncio.run(generate_quiz(request))
+                requests = [
+                    VideoRequestSchema(
+                        video=video["content"],
+                        skills=skills,
+                        objective=objectives,
+                        language=language
+                    )
+                    for video in videos
+                ]
+                quiz_responses = asyncio.run(generate_quiz(requests))  # Batch processing
+
+                for video, quiz_response in zip(videos, quiz_responses):
                     df = convert_quiz_to_dataframe(quiz_response, video["title"])
                     all_dfs.append(df)
 

@@ -2,12 +2,13 @@ import os
 import uuid
 import asyncio
 import logging
-from typing import List
+from typing import List, Any, Coroutine
 
 from dotenv import load_dotenv
 
 from app.client.llm_client import OpenAITextProcessor
 from app.client.vector_db import QdrantDBClient
+from app.models.llm_response_model import QuizResponse
 from app.models.processing_models import ProcessedParagraph, SimplifyResults, QuizResults
 from app.schema.video_schema import VideoRequestSchema, MetaDataSchema
 
@@ -117,30 +118,12 @@ async def simplify_paragraph_v1(paragraphs: List[ProcessedParagraph]) -> List[Si
     return results
 
 
-async def generate_quiz(paragraphs: List[SimplifyResults]) -> List[QuizResults]:
+async def generate_quiz(paragraphs: VideoRequestSchema) -> QuizResponse:
     logger.info("Starting quiz generation...")
-
-    async def generate_single(paragraph: SimplifyResults) -> QuizResults:
-        try:
-            result = await asyncio.to_thread(llm_client.generate_quiz,
-                                             skills=paragraph.skills,
-                                             objective=paragraph.objective,
-                                             paragraph_content=paragraph.paragraph,
-                                             language=paragraph.language)
-            return QuizResults(
-                paragraph=paragraph.paragraph,
-                paragraph_level=paragraph.paragraph_level,
-                simplify1=paragraph.simplify1,
-                simplify2=paragraph.simplify2,
-                simplify3=paragraph.simplify3,
-                quiz=result.quiz,
-                skills=paragraph.skills,
-                objective=paragraph.objective,
-                language=paragraph.language
-            )
-        except Exception as e:
-            raise e
-
-    results = await asyncio.gather(*(generate_single(p) for p in paragraphs))
-    logger.info(f"Generated quizzes for {len(results)} paragraphs.")
-    return results
+    quiz = llm_client.generate_quiz(
+        skills=paragraphs.skills,
+        objective=paragraphs.objective,
+        paragraph_content=paragraphs.video,
+        language=paragraphs.language
+    )
+    return quiz

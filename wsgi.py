@@ -1,7 +1,8 @@
-from typing import List
+from typing import List, Any, Coroutine
 
 from fastapi import FastAPI, HTTPException
 
+from app.models.llm_response_model import QuizResponse
 from app.models.processing_models import QuizResults
 from app.models.translate_video_metadata import CourseWrapper
 from app.schema.video_schema import VideoRequestSchema
@@ -14,12 +15,9 @@ app = FastAPI(root_path="/aicourseprocessing")
 # List[QuizResults]
 
 @app.post("/process_video")
-async def process_video(process_video_request: VideoRequestSchema) -> List[QuizResults]:
+async def process_video(process_video_request: VideoRequestSchema) -> QuizResponse:
     try:
-        # Generate paragraph
-        paragraph_list = await get_paragraph(process_video_request)
-        simplify = await simplify_paragraph_v1(paragraph_list)
-        quiz = await generate_quiz(simplify)
+        quiz = await generate_quiz(process_video_request)
         return quiz
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

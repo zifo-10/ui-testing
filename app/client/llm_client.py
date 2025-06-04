@@ -91,7 +91,7 @@ class OpenAITextProcessor:
                                 f"##Answer in {language} language:\n##\n"
                     )
                 ],
-                temperature=0,
+                temperature=0.1,
                 response_format=QuizResponse,
                 timeout=600
             )

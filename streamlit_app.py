@@ -1,373 +1,222 @@
 import streamlit as st
 import pandas as pd
 import asyncio
-from typing import List, Optional
-import json
-from io import StringIO
+from typing import List, Dict, Any
+import io
+from datetime import datetime
+from streamlit_tags import st_tags
 
-# Import your existing services
-from app.service.course_service import generate_quiz, get_paragraph, simplify_paragraph_v1
-
-# Pydantic models (you'll need to import these from your existing code)
-from app.models.processing_models import QuizResults
+# Import your actual schemas and service
 from app.schema.video_schema import VideoRequestSchema, MetaDataSchema
+from app.models.llm_response_model import QuizResponse
+from app.service.course_service import generate_quiz
+from app.contant_manager import question_generation_prompt
 
+def convert_quiz_to_dataframe(quiz_response: QuizResponse) -> pd.DataFrame:
+    data = []
+    for i, quiz_item in enumerate(quiz_response.quiz):
+        data.append({
+            'Question_ID': i + 1,
+            'Question': quiz_item.question,
+            'Question_Type': quiz_item.question_type,
+            'Post_Assessment': quiz_item.post_assessment,
+            'Question_Level': quiz_item.question_level,
+            'Options': ' | '.join(quiz_item.options),
+            'Correct_Answer': quiz_item.correct_answer,
+            'Related_Skills': ' | '.join([skill.name for skill in quiz_item.related_skills]),
+            'Related_Objectives': ' | '.join([obj.name for obj in quiz_item.related_objectives]),
+            'Alternative_Questions': quiz_item.alternative_questions
+        })
+    return pd.DataFrame(data)
+
+def convert_dataframe_to_quiz(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    quiz_data = []
+    for _, row in df.iterrows():
+        quiz_data.append({
+            'question': row['Question'],
+            'question_type': row['Question_Type'],
+            'post_assessment': row['Post_Assessment'],
+            'question_level': str(row['Question_Level']),
+            'options': row['Options'].split(' | ') if row['Options'] else [],
+            'correct_answer': row['Correct_Answer'],
+            'related_skills': row['Related_Skills'].split(' | ') if row['Related_Skills'] else [],
+            'related_objectives': row['Related_Objectives'].split(' | ') if row['Related_Objectives'] else [],
+            'alternative_questions': row['Alternative_Questions']
+        })
+    return quiz_data
+
+def create_excel_download(df: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='Quiz_Data', index=False)
+        worksheet = writer.sheets['Quiz_Data']
+        for column in worksheet.columns:
+            max_length = 0
+            column_name = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            worksheet.column_dimensions[column_name].width = min(max_length + 2, 50)
+    return output.getvalue()
 
 def main():
-    st.set_page_config(page_title="Video Processing App", layout="wide")
+    st.set_page_config(page_title="Quiz Generator", page_icon="📝", layout="wide")
+    st.title("📝 Quiz Generator")
+    st.markdown("Generate quizzes from video content, edit them, and download as Excel")
 
-    st.title("📝 Video Script Processing & Quiz Generation")
-    st.markdown("Process video scripts to generate paragraphs, simplifications, and quizzes")
+    if 'quiz_generated' not in st.session_state:
+        st.session_state.quiz_generated = False
+    if 'quiz_data' not in st.session_state:
+        st.session_state.quiz_data = None
+    if 'edited_df' not in st.session_state:
+        st.session_state.edited_df = None
 
-    # Initialize session state
-    if 'quiz_results' not in st.session_state:
-        st.session_state.quiz_results = []
-    if 'processing_complete' not in st.session_state:
-        st.session_state.processing_complete = False
-
-    # Sidebar for input
     with st.sidebar:
-        st.header("📝 Input Configuration")
+        st.header("📋 Quiz Configuration")
 
-        # Video script input
-        video_script = st.text_area(
-            "Video Script",
-            placeholder="Enter the video script text here...",
-            height=200,
-            help="Paste the video script/transcript content"
+        video_input = st.text_area(
+            "Video URL or Content",
+            placeholder="Enter video URL or describe the video content...",
+            height=100
         )
 
-        # Language selection
-        language = st.selectbox("Language", ["English", "Spanish", "French", "German", "Other"])
-        if language == "Other":
-            language = st.text_input("Custom Language", placeholder="Enter language")
+        st.subheader("🛠 Skills")
+        skills_input = st_tags(
+            label='💡 Enter Skills:',
+            text='Press Enter to add more',
+            value=[],
+            suggestions=["Critical Thinking", "Problem Solving", "Collaboration", "Communication"],
+            maxtags=20,
+            key='skills'
+        )
 
-        # Objectives section
         st.subheader("🎯 Objectives")
-        objectives = []
-
-        # Dynamic objectives input
-        if 'num_objectives' not in st.session_state:
-            st.session_state.num_objectives = 1
-
-        for i in range(st.session_state.num_objectives):
-            obj_name = st.text_input(f"Objective {i + 1}", key=f"obj_{i}", placeholder="Enter objective name")
-            if obj_name:
-                objectives.append(MetaDataSchema(name=obj_name))
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("➕ Add Objective"):
-                st.session_state.num_objectives += 1
-                st.rerun()
-        with col2:
-            if st.button("➖ Remove Objective") and st.session_state.num_objectives > 1:
-                st.session_state.num_objectives -= 1
-                st.rerun()
-
-        # Skills section
-        st.subheader("🔧 Skills")
-        skills = []
-
-        # Dynamic skills input
-        if 'num_skills' not in st.session_state:
-            st.session_state.num_skills = 1
-
-        for i in range(st.session_state.num_skills):
-            skill_name = st.text_input(f"Skill {i + 1}", key=f"skill_{i}", placeholder="Enter skill name")
-            if skill_name:
-                skills.append(MetaDataSchema(name=skill_name))
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("➕ Add Skill"):
-                st.session_state.num_skills += 1
-                st.rerun()
-        with col2:
-            if st.button("➖ Remove Skill") and st.session_state.num_skills > 1:
-                st.session_state.num_skills -= 1
-                st.rerun()
-
-        # Process button
-        st.markdown("---")
-        process_button = st.button("🚀 Process Script", type="primary", use_container_width=True)
-
-    # Main content area
-    if process_button and video_script:
-        if not objectives or not skills:
-            st.error("Please add at least one objective and one skill.")
-            return
-
-        if not video_script.strip():
-            st.error("Please enter the video script content.")
-            return
-
-        # Create request schema
-        request_data = VideoRequestSchema(
-            video=video_script,
-            objective=objectives,
-            skills=skills,
-            language=language
+        objectives_input = st_tags(
+            label='📌 Enter Objectives:',
+            text='Press Enter to add more',
+            value=[],
+            suggestions=["Understand concepts", "Apply knowledge", "Evaluate solutions"],
+            maxtags=20,
+            key='objectives'
         )
 
-        # Process video script
-        with st.spinner("Processing video script... This may take a few minutes."):
+        language = st.selectbox(
+            "Language",
+            ["English", "Spanish", "French", "German", "Italian", "Portuguese"],
+            index=0
+        )
+
+        generate_button = st.button("🔄 Generate Quiz", type="primary", use_container_width=True)
+        if st.button("📜 Show Prompt", use_container_width=True):
+            st.code(question_generation_prompt, language="python")
+
+    if generate_button and video_input and skills_input and objectives_input:
+        skills = [MetaDataSchema(name=s.strip()) for s in skills_input if s.strip()]
+        objectives = [MetaDataSchema(name=o.strip()) for o in objectives_input if o.strip()]
+        request = VideoRequestSchema(video=video_input, skills=skills, objective=objectives, language=language)
+
+        with st.spinner("🤖 Generating quiz..."):
             try:
-                # Run async functions
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
-                # Generate paragraph
-                paragraph_list = loop.run_until_complete(get_paragraph(request_data))
-                st.success("✅ Paragraphs generated")
-
-                # Simplify paragraphs
-                simplify_results = loop.run_until_complete(simplify_paragraph_v1(paragraph_list))
-                st.success("✅ Paragraphs simplified")
-
-                # Generate quiz
-                quiz_results = loop.run_until_complete(generate_quiz(simplify_results))
-                st.success("✅ Quiz generated")
-
-                # Store results in session state
-                st.session_state.quiz_results = quiz_results
-                st.session_state.processing_complete = True
-
-                st.success("🎉 Processing completed successfully!")
-
+                quiz_response = asyncio.run(generate_quiz(request))
+                st.session_state.quiz_data = quiz_response
+                st.session_state.quiz_generated = True
+                st.success("✅ Quiz generated successfully!")
             except Exception as e:
-                st.error(f"Error processing video script: {str(e)}")
-                return
+                st.error(f"❌ Error generating quiz: {str(e)}")
 
-            # Display and edit results
-    if st.session_state.processing_complete and st.session_state.quiz_results:
+    elif generate_button:
+        st.warning("⚠️ Please fill in all required fields")
+
+    if st.session_state.quiz_generated and st.session_state.quiz_data:
+        st.header("📊 Generated Quiz")
+
+        df = convert_quiz_to_dataframe(st.session_state.quiz_data)
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Questions", len(df))
+        col2.metric("Multiple Choice", len(df[df['Question_Type'] == 'multiple_choice']))
+        col3.metric("True/False", len(df[df['Question_Type'] == 'true_false']))
+        col4.metric("Post Assessment", len(df[df['Post_Assessment'] == True]))
+
         st.markdown("---")
-        st.header("📊 Results - Edit Content & Questions")
+        st.subheader("✏️ Edit Quiz Questions")
 
-        # Tabs for different sections
-        tab1, tab2 = st.tabs(["📚 Content Blocks with Questions", "💾 Download"])
+        edited_df = st.data_editor(
+            df,
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "Question_ID": st.column_config.NumberColumn("ID", disabled=True),
+                "Question": st.column_config.TextColumn("Question", width="large"),
+                "Question_Type": st.column_config.SelectboxColumn("Type", options=["multiple_choice", "true_false"]),
+                "Post_Assessment": st.column_config.CheckboxColumn("Post Assessment"),
+                "Question_Level": st.column_config.SelectboxColumn("Level", options=["1", "2", "3", "4", "5", "6"]),
+                "Options": st.column_config.TextColumn("Options (separated by |)", width="large"),
+                "Correct_Answer": st.column_config.TextColumn("Correct Answer"),
+                "Related_Skills": st.column_config.TextColumn("Skills (separated by |)", width="medium"),
+                "Related_Objectives": st.column_config.TextColumn("Objectives (separated by |)", width="medium"),
+                "Alternative_Questions": st.column_config.CheckboxColumn("Alternative")
+            },
+            key="quiz_editor"
+        )
 
-        with tab1:
-            st.subheader("Content Blocks with Questions")
-            st.markdown("Each content block contains the paragraph, simplifications, and all related quiz questions.")
+        st.session_state.edited_df = edited_df
 
-            for i, result in enumerate(st.session_state.quiz_results):
-                with st.expander(f"📖 Content Block {i + 1} - {len(result.quiz)} Questions", expanded=True):
-                    # Content and Simplifications Section
-                    st.markdown("### 📝 Content & Simplifications")
+        st.markdown("---")
+        st.subheader("💾 Download Quiz")
 
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        # Original paragraph
-                        new_paragraph = st.text_area(
-                            "Original Paragraph",
-                            value=result.paragraph,
-                            key=f"paragraph_{i}",
-                            height=120
-                        )
-                        result.paragraph = new_paragraph
-
-                        # Basic explanation
-                        new_simplify1 = st.text_area(
-                            "Basic Explanation",
-                            value=result.simplify1,
-                            key=f"simplify1_{i}",
-                            height=120
-                        )
-                        result.simplify1 = new_simplify1
-
-                    with col2:
-                        # More simplified
-                        new_simplify2 = st.text_area(
-                            "More Simplified",
-                            value=result.simplify2,
-                            key=f"simplify2_{i}",
-                            height=120
-                        )
-                        result.simplify2 = new_simplify2
-
-                        # Child-friendly
-                        new_simplify3 = st.text_area(
-                            "Child-Friendly",
-                            value=result.simplify3,
-                            key=f"simplify3_{i}",
-                            height=120
-                        )
-                        result.simplify3 = new_simplify3
-
-                    # Meta information
-                    st.markdown("### 📋 Meta Information")
-                    meta_col1, meta_col2, meta_col3 = st.columns(3)
-
-                    with meta_col1:
-                        st.info(f"**Language:** {result.language}")
-                        st.info(f"**Level:** {result.paragraph_level.name}")
-
-                    with meta_col2:
-                        objectives_text = ", ".join([obj.name for obj in result.objective])
-                        st.info(f"**Objectives:** {objectives_text}")
-
-                    with meta_col3:
-                        skills_text = ", ".join([skill.name for skill in result.skills])
-                        st.info(f"**Skills:** {skills_text}")
-
-                    # Quiz Questions Section
-                    st.markdown("### 🧩 Quiz Questions")
-
-                    for j, quiz in enumerate(result.quiz):
-                        st.markdown(f"#### Question {j + 1} of {len(result.quiz)}")
-
-                        # Question content in columns
-                        q_col1, q_col2 = st.columns([3, 2])
-
-                        with q_col1:
-                            # Question text
-                            new_question = st.text_area(
-                                "Question Text",
-                                value=quiz.question,
-                                key=f"question_{i}_{j}",
-                                height=80
-                            )
-                            quiz.question = new_question
-
-                            # Answer options
-                            st.write("**Answer Options:**")
-                            new_options = []
-
-                            if not quiz.options:
-                                quiz.options = ["Option 1", "Option 2", "Option 3", "Option 4"]
-
-                            for k, option in enumerate(quiz.options):
-                                new_option = st.text_input(
-                                    f"Option {k + 1}",
-                                    value=option,
-                                    key=f"option_{i}_{j}_{k}"
-                                )
-                                new_options.append(new_option)
-                            quiz.options = new_options
-
-                            # Correct answer
-                            new_correct_answer = st.text_input(
-                                "Correct Answer",
-                                value=quiz.correct_answer,
-                                key=f"correct_{i}_{j}"
-                            )
-                            quiz.correct_answer = new_correct_answer
-
-                        with q_col2:
-                            # Question metadata
-                            type_index = 0 if quiz.question_type == "multiple_choice" else 1
-                            new_question_type = st.selectbox(
-                                "Question Type",
-                                ["multiple_choice", "true_false"],
-                                index=type_index,
-                                key=f"qtype_{i}_{j}"
-                            )
-                            quiz.question_type = new_question_type
-
-                            level_index = int(quiz.question_level) - 1 if quiz.question_level.isdigit() else 0
-                            new_question_level = st.selectbox(
-                                "Question Level (1-6)",
-                                ["1", "2", "3", "4", "5", "6"],
-                                index=level_index,
-                                key=f"qlevel_{i}_{j}"
-                            )
-                            quiz.question_level = new_question_level
-
-                            new_post_assessment = st.checkbox(
-                                "Post Assessment",
-                                value=quiz.post_assessment,
-                                key=f"post_assess_{i}_{j}"
-                            )
-                            quiz.post_assessment = new_post_assessment
-
-                            # Display related skills and objectives
-                            if quiz.related_skills:
-                                related_skills = ", ".join([skill.name for skill in quiz.related_skills])
-                                st.caption(f"**Related Skills:** {related_skills}")
-
-                            if quiz.related_objectives:
-                                related_objectives = ", ".join([obj.name for obj in quiz.related_objectives])
-                                st.caption(f"**Related Objectives:** {related_objectives}")
-
-                        # Add separator between questions
-                        if j < len(result.quiz) - 1:
-                            st.markdown("---")
-
-                    # Add separator between content blocks
-                    if i < len(st.session_state.quiz_results) - 1:
-                        st.markdown("---")
-                        st.markdown("---")
-
-        with tab2:
-            st.subheader("Download Results")
-
-            # Prepare data for CSV
-            csv_data = []
-
-            for i, result in enumerate(st.session_state.quiz_results):
-                # Add content data
-                base_row = {
-                    'content_block': i + 1,
-                    'original_paragraph': result.paragraph,
-                    'basic_explanation': result.simplify1,
-                    'more_simplified': result.simplify2,
-                    'child_friendly': result.simplify3,
-                    'language': result.language,
-                    'objectives': '; '.join([obj.name for obj in result.objective]),
-                    'skills': '; '.join([skill.name for skill in result.skills]),
-                    'paragraph_level': result.paragraph_level.name
-                }
-
-                # Add quiz data
-                for j, quiz in enumerate(result.quiz):
-                    quiz_row = base_row.copy()
-                    quiz_row.update({
-                        'question_number': j + 1,
-                        'question': quiz.question,
-                        'question_type': quiz.question_type,
-                        'post_assessment': quiz.post_assessment,
-                        'question_level': quiz.question_level,
-                        'options': '; '.join(quiz.options),
-                        'correct_answer': quiz.correct_answer,
-                        'related_skills': '; '.join([skill.name for skill in quiz.related_skills]),
-                        'related_objectives': '; '.join([obj.name for obj in quiz.related_objectives])
-                    })
-                    csv_data.append(quiz_row)
-
-            # Create DataFrame
-            df = pd.DataFrame(csv_data)
-
-            # Display preview
-            st.write("**Preview of CSV data:**")
-            st.dataframe(df.head(10), use_container_width=True)
-
-            # Download button
-            csv_string = df.to_csv(index=False)
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("📥 Download as Excel", type="primary", use_container_width=True):
+                excel_data = create_excel_download(edited_df)
+                filename = f"quiz_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                st.download_button(
+                    label="📁 Click to Download Excel File",
+                    data=excel_data,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+        with col2:
+            csv_data = edited_df.to_csv(index=False)
+            filename = f"quiz_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             st.download_button(
-                label="📥 Download CSV",
-                data=csv_string,
-                file_name="video_processing_results.csv",
+                label="📄 Download as CSV",
+                data=csv_data,
+                file_name=filename,
                 mime="text/csv",
-                type="primary",
                 use_container_width=True
             )
 
-            # Also provide JSON download option
-            json_data = []
-            for result in st.session_state.quiz_results:
-                json_data.append(result.dict())
+        with st.expander("👀 Preview Quiz Questions"):
+            for _, row in edited_df.iterrows():
+                st.markdown(f"**Question {int(row['Question_ID'])}:** {row['Question']}")
+                st.markdown(f"*Type:* {row['Question_Type']} | *Level:* {row['Question_Level']} | *Post Assessment:* {row['Post_Assessment']}")
+                if row['Options']:
+                    st.markdown(f"*Options:* {row['Options']}")
+                st.markdown(f"*Correct Answer:* {row['Correct_Answer']}")
+                st.markdown("---")
 
-            json_string = json.dumps(json_data, indent=2)
-            st.download_button(
-                label="📥 Download JSON",
-                data=json_string,
-                file_name="video_processing_results.json",
-                mime="application/json",
-                use_container_width=True
-            )
+    if not st.session_state.quiz_generated:
+        st.markdown("""
+        ## 🚀 How to Use
 
+        1. **Enter Video Info**: Provide the video URL or content.
+        2. **Add Skills/Objectives**: Use tags to define key skills and learning goals.
+        3. **Select Language**: Choose quiz language.
+        4. **Generate**: Let the assistant create quiz questions.
+        5. **Edit**: Customize questions as needed.
+        6. **Download**: Export as Excel or CSV.
+
+        ### 📝 Tips
+        - Use "|" to separate multiple options
+        - Levels: 1 (Easy) to 6 (Advanced)
+        - Post Assessment = final evaluation
+        - "Alternative" marks optional question versions
+        """)
 
 if __name__ == "__main__":
     main()

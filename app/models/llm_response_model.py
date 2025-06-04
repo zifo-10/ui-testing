@@ -44,7 +44,8 @@ class QuizMetaData(BaseModel):
     correct_answer: str = Field(..., description="Correct answer")
     related_skills: List[MetaDataSchema] = Field(..., description="List of skills related to the quiz")
     related_objectives: List[MetaDataSchema] = Field(..., description="List of objectives related to the quiz")
-    alternative_questions: List[AlternativeQuestion] = Field(..., description="List of alternative questions")
+    alternative_questions: bool = Field(
+        False, description="Indicates that if the question is an alternative question or not")
 
 
 class QuizResponse(BaseModel):

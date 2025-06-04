@@ -84,6 +84,7 @@ You are an expert Analyze the given video script and generate assessment questio
     - Focus on **facts, statistics, and key ideas**—avoid assumptions.
     - For each question add question level from 1 to 6 (1 being the easiest and 6 being the most difficult).
     - Tag 80 question with `post_assessment: true`, and 20 with `post_assessment: false`.
+    - Tag 80 questions with `alternative_questions: true`, and 20 with `alternative_questions: false`.
     - The correct answer must exactly match one of the options provided.
 
 3. **Skill Mapping**:

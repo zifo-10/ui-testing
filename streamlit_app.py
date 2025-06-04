@@ -99,6 +99,20 @@ def main():
 
         uploaded_file = st.file_uploader("📂 Upload Course Document", type=["txt", "md", "docx"])
 
+        if uploaded_file:
+            try:
+                if uploaded_file.name.endswith(".docx"):
+                    file_text = read_docx_text(uploaded_file)
+                else:
+                    file_text = uploaded_file.read().decode("utf-8")
+                videos = extract_videos_from_text(file_text)
+                st.success(f"✅ Detected {len(videos)} video(s): {[video['title'] for video in videos]}")
+            except Exception as e:
+                st.error(f"❌ Failed to read file: {e}")
+                videos = []
+        else:
+            videos = []
+
         st.subheader("🛠 Skills")
         skills_input = st_tags(
             label='💡 Enter Skills:',
@@ -131,12 +145,9 @@ def main():
 
     if generate_button and uploaded_file and skills_input and objectives_input:
         try:
-            if uploaded_file.name.endswith(".docx"):
-                file_text = read_docx_text(uploaded_file)
-            else:
-                file_text = uploaded_file.read().decode("utf-8")
+            if not videos:
+                raise ValueError("No videos detected in uploaded file")
 
-            videos = extract_videos_from_text(file_text)
             all_dfs = []
             skills = [MetaDataSchema(name=s.strip()) for s in skills_input if s.strip()]
             objectives = [MetaDataSchema(name=o.strip()) for o in objectives_input if o.strip()]
